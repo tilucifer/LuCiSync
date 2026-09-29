@@ -12,6 +12,7 @@ python -m venv .venv
 . .venv/bin/activate
 # Windows PowerShell : .venv\Scripts\Activate.ps1
 python -m pip install .
+# Reinstallation après modifications : python -m pip install --force-reinstall --no-deps .
 synctool
 ```
 
@@ -20,7 +21,7 @@ Sous Linux, `rsync` est utilisé s’il est installé. Sous Windows, Synctool ut
 ## Utilisation
 
 - Ajoutez des fichiers ou dossiers avec les boutons, ou déposez des fichiers depuis votre gestionnaire de fichiers.
-- **Fichiers .env** recherche récursivement les fichiers `.env` et `.env.*` sous le dossier choisi. Les dossiers `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` et `.cache` sont ignorés.
+- Ajoutez vos fichiers `.env` avec **+ Fichiers** ; ils peuvent être sélectionnés comme les autres fichiers (sur Linux, utilisez `Ctrl+H` dans le sélecteur pour afficher les fichiers cachés).
 - Double-cliquez sur le chemin cible d’une ligne pour le modifier. Glissez les lignes pour les réordonner et utilisez `×` pour en retirer une.
 - Choisissez la destination avec **Parcourir…**. **Emplacements détectés** propose les lecteurs réseau montés et, sous Windows, les distributions WSL détectées par `wsl.exe`. Les chemins UNC peuvent aussi être saisis directement.
 - Enregistrez plusieurs configurations JSON avec **Enregistrer sous…**, puis rechargez-les avec **Charger**. La configuration active est enregistrée automatiquement.

@@ -46,6 +46,13 @@ from .core import (
 STYLE = """
 QMainWindow, QWidget { background: #f4f7fa; color: #182532; font-family: 'Segoe UI', 'Noto Sans', sans-serif; font-size: 13px; }
 QFrame#card { background: #ffffff; border: 1px solid #e2e8ef; border-radius: 12px; }
+QFrame#toolGroup { background: #ffffff; border: 1px solid #dfe7ed; border-radius: 10px; }
+QFrame#sourceToolsGroup { background: #edf6f5; border: 1px solid #cee3e0; border-radius: 10px; }
+QLabel#groupLabel { color: #718391; font-size: 10px; font-weight: 700; }
+QFileDialog, QFileDialog QWidget { font-size: 11pt; }
+QFileDialog QTreeView, QFileDialog QListView { font-size: 11pt; }
+QFileDialog QLineEdit { font-size: 11pt; min-height: 38px; padding: 0px 0px; }
+QFileDialog QPushButton { font-size: 11pt; min-height: 34px; padding: 0px 0px; }
 QLabel#title { font-size: 25px; font-weight: 700; color: #142d3e; }
 QLabel#subtitle { color: #667887; font-size: 13px; }
 QLabel#sectionTitle { font-size: 15px; font-weight: 650; color: #203746; }
@@ -222,26 +229,49 @@ class MainWindow(QMainWindow):
 
     def _build_config_toolbar(self, page: QVBoxLayout) -> None:
         bar = QHBoxLayout()
-        bar.setSpacing(8)
+        bar.setSpacing(12)
+
+        config_group = QFrame()
+        config_group.setObjectName("toolGroup")
+        config_layout = QVBoxLayout(config_group)
+        config_layout.setContentsMargins(13, 10, 13, 11)
+        config_layout.setSpacing(7)
+        config_title = QLabel("1 · CONFIGURATION")
+        config_title.setObjectName("groupLabel")
+        config_layout.addWidget(config_title)
+        config_buttons = QHBoxLayout()
+        config_buttons.setSpacing(8)
         self.load_button = QPushButton("Charger")
         self.save_button = QPushButton("Enregistrer")
         self.save_as_button = QPushButton("Enregistrer sous…")
-        self.add_files_button = QPushButton("+ Fichiers")
-        self.add_folder_button = QPushButton("+ Dossier")
-        self.add_env_button = QPushButton("+ Fichiers .env")
         self.load_button.clicked.connect(self.load_as)
         self.save_button.clicked.connect(self.save_now)
         self.save_as_button.clicked.connect(self.save_as)
+        for button in (self.load_button, self.save_button, self.save_as_button):
+            config_buttons.addWidget(button)
+        config_layout.addLayout(config_buttons)
+
+        source_group = QFrame()
+        source_group.setObjectName("sourceToolsGroup")
+        source_layout = QVBoxLayout(source_group)
+        source_layout.setContentsMargins(13, 10, 13, 11)
+        source_layout.setSpacing(7)
+        source_title = QLabel("2 · ÉLÉMENTS À AJOUTER")
+        source_title.setObjectName("groupLabel")
+        source_layout.addWidget(source_title)
+        source_buttons = QHBoxLayout()
+        source_buttons.setSpacing(8)
+        self.add_files_button = QPushButton("+ Fichiers")
+        self.add_files_button.setToolTip("Ajouter un ou plusieurs fichiers, y compris des fichiers .env")
+        self.add_folder_button = QPushButton("+ Dossier")
         self.add_files_button.clicked.connect(self.choose_files)
         self.add_folder_button.clicked.connect(self.choose_folder)
-        self.add_env_button.clicked.connect(self.choose_env_root)
-        for button in (self.load_button, self.save_button, self.save_as_button):
-            bar.addWidget(button)
-        bar.addSpacing(9)
-        bar.addWidget(self.add_files_button)
-        bar.addWidget(self.add_folder_button)
-        bar.addWidget(self.add_env_button)
-        bar.addStretch(1)
+        source_buttons.addWidget(self.add_files_button)
+        source_buttons.addWidget(self.add_folder_button)
+        source_layout.addLayout(source_buttons)
+
+        bar.addWidget(config_group, 3)
+        bar.addWidget(source_group, 2)
         page.addLayout(bar)
 
     def _build_destination_card(self, page: QVBoxLayout) -> None:
@@ -368,19 +398,38 @@ class MainWindow(QMainWindow):
         except OSError as error:
             QMessageBox.critical(self, "Enregistrement impossible", str(error))
 
+    def _styled_file_dialog(self, title: str, directory: str) -> QFileDialog:
+        dialog = QFileDialog(self, title, directory)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setMinimumSize(820, 580)
+        dialog_font = QFont(self.font())
+        dialog_font.setPointSize(14)
+        dialog.setFont(dialog_font)
+        return dialog
+
     def save_as(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Enregistrer la configuration", str(self.config_path), "Configuration Synctool (*.json)")
-        if not path:
+        dialog = self._styled_file_dialog("Enregistrer la configuration", str(self.config_path.parent))
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter("Configuration Synctool (*.json)")
+        dialog.setDefaultSuffix("json")
+        dialog.selectFile(self.config_path.name)
+        if dialog.exec() != QFileDialog.DialogCode.Accepted:
             return
+        path = dialog.selectedFiles()[0]
         self.config_path = Path(path)
         if self.config_path.suffix.lower() != ".json":
             self.config_path = self.config_path.with_suffix(".json")
         self.save_now()
 
     def load_as(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Charger une configuration", str(self.config_path.parent), "Configuration Synctool (*.json)")
-        if not path:
+        dialog = self._styled_file_dialog("Charger une configuration", str(self.config_path.parent))
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilter("Configuration Synctool (*.json)")
+        if dialog.exec() != QFileDialog.DialogCode.Accepted:
             return
+        path = dialog.selectedFiles()[0]
         try:
             destination, entries = load_config(Path(path))
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -395,41 +444,22 @@ class MainWindow(QMainWindow):
         self._schedule_save()
 
     def choose_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Ajouter des fichiers")
-        self.add_sources(paths)
+        dialog = self._styled_file_dialog("Ajouter un ou plusieurs fichiers", str(Path.home()))
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        if dialog.exec() == QFileDialog.DialogCode.Accepted:
+            self.add_sources(dialog.selectedFiles())
 
     def choose_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Ajouter un dossier", str(Path.home()))
-        if path:
-            self.add_sources([path])
+        dialog = self._styled_file_dialog("Ajouter un dossier", str(Path.home()))
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dialog.exec() == QFileDialog.DialogCode.Accepted:
+            self.add_sources(dialog.selectedFiles())
 
-    def choose_env_root(self) -> None:
-        root = QFileDialog.getExistingDirectory(self, "Rechercher les fichiers .env dans un dossier", str(Path.home()))
-        if not root:
-            return
-        base = Path(root)
-        ignored = {".git", "node_modules", ".venv", "venv", "__pycache__", ".cache"}
-        matches: list[Path] = []
-        for current, dirs, files in os.walk(base, followlinks=False):
-            dirs[:] = [name for name in dirs if name not in ignored and not (Path(current) / name).is_symlink()]
-            for filename in files:
-                if filename == ".env" or filename.startswith(".env."):
-                    matches.append(Path(current) / filename)
-        if not matches:
-            QMessageBox.information(self, "Aucun fichier .env", "Aucun fichier nommé .env ou .env.* n’a été trouvé sous ce dossier.")
-            return
-        prefix = base.name
-        rows = []
-        for path in matches:
-            relative = path.relative_to(base).as_posix()
-            rows.append((path, relative))
-        self.add_sources([str(path) for path, _ in rows], {str(path): target for path, target in rows})
-        self.status_label.setText(f"{len(matches)} fichier(s) .env ajouté(s) depuis {prefix}")
-
-    def add_sources(self, paths: list[str], target_overrides: dict[str, str] | None = None) -> None:
+    def add_sources(self, paths: list[str]) -> None:
         known = {os.path.normcase(os.path.abspath(row["source"])) for row in self.entries}
         added = 0
-        overrides = target_overrides or {}
         for raw in paths:
             if not raw:
                 continue
@@ -438,7 +468,7 @@ class MainWindow(QMainWindow):
             if normalized in known:
                 continue
             name = source.name or str(source)
-            target_rel = overrides.get(str(source), name)
+            target_rel = name
             try:
                 target_rel = safe_target_relative(target_rel)
             except ValueError:
@@ -564,9 +594,13 @@ class MainWindow(QMainWindow):
 
     def choose_destination(self) -> None:
         current = self.destination_edit.text() or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, "Choisir le dossier de destination", current)
-        if path:
-            self.destination_edit.setText(path)
+        dialog = self._styled_file_dialog("Choisir le dossier de destination", current)
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dialog.exec() == QFileDialog.DialogCode.Accepted:
+            selected = dialog.selectedFiles()
+            if selected:
+                self.destination_edit.setText(selected[0])
 
     def show_locations_menu(self) -> None:
         menu = QMenu(self)
@@ -627,7 +661,7 @@ class MainWindow(QMainWindow):
     def _set_controls_enabled(self, enabled: bool) -> None:
         for control in (
             self.load_button, self.save_button, self.save_as_button,
-            self.add_files_button, self.add_folder_button, self.add_env_button,
+            self.add_files_button, self.add_folder_button,
             self.clear_button, self.destination_edit, self.browse_destination_button,
             self.locations_button,
         ):
