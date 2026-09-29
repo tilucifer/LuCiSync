@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 
-APP_NAME = "Synctool"
+APP_NAME = "LuCiSync"
+APP_CONFIG_NAME = "lucisync"
+LEGACY_APP_NAME = "LuCiSync"
+LEGACY_CONFIG_NAME = "lucisync"
 SCHEMA_VERSION = 1
 
 
@@ -24,11 +27,32 @@ def app_data_dir() -> Path:
         base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
         return Path(base) / APP_NAME if base else Path.home() / "AppData" / "Roaming" / APP_NAME
     base = os.environ.get("XDG_CONFIG_HOME")
-    return Path(base) / "synctool" if base else Path.home() / ".config" / "synctool"
+    return Path(base) / APP_CONFIG_NAME if base else Path.home() / ".config" / APP_CONFIG_NAME
+
+
+def legacy_app_data_dir() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
+        return Path(base) / LEGACY_APP_NAME if base else Path.home() / "AppData" / "Roaming" / LEGACY_APP_NAME
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return Path(base) / LEGACY_CONFIG_NAME if base else Path.home() / ".config" / LEGACY_CONFIG_NAME
 
 
 DEFAULT_CONFIG = app_data_dir() / "config.json"
 DEFAULT_JOURNAL = app_data_dir() / "sync-history.jsonl"
+LEGACY_CONFIG = legacy_app_data_dir() / "config.json"
+LEGACY_JOURNAL = legacy_app_data_dir() / "sync-history.jsonl"
+
+
+def migrate_legacy_data() -> None:
+    """Copy the previous default config and journal into LuCiSync's data folder."""
+    for source, destination in (
+        (LEGACY_CONFIG, DEFAULT_CONFIG),
+        (LEGACY_JOURNAL, DEFAULT_JOURNAL),
+    ):
+        if source.is_file() and not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
 
 
 def utc_now() -> str:
@@ -189,7 +213,7 @@ def _copy_resumable(source: Path, destination: Path) -> bool:
         return False
 
     source_stat = source.stat()
-    partial = destination.with_name(f".{destination.name}.synctool-partial")
+    partial = destination.with_name(f".{destination.name}.lucisync-partial")
     metadata = partial.with_name(partial.name + ".json")
     expected = {
         "source": str(source.resolve()),

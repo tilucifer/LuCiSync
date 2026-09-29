@@ -9,8 +9,8 @@ from .ui import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Synctool")
-    app.setOrganizationName("Synctool")
+    app.setApplicationName("LuCiSync")
+    app.setOrganizationName("LuCiSync")
     window = MainWindow()
     window.show()
     return app.exec()

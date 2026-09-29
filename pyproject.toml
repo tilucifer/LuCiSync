@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "synctool"
+name = "lucisync"
 version = "0.1.0"
 description = "Synchronisation graphique de fichiers et de répertoires"
 readme = "README.md"
@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = ["PySide6>=6.7"]
 
 [project.scripts]
-synctool = "synctool.__main__:main"
+lucisync = "lucisync.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

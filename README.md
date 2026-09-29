@@ -1,4 +1,4 @@
-# Synctool
+# LuCiSync
 
 Application graphique pour synchroniser des fichiers et dossiers vers un dossier local, un partage réseau ou un chemin WSL. Elle fonctionne sous Linux et Windows.
 
@@ -13,10 +13,10 @@ python -m venv .venv
 # Windows PowerShell : .venv\Scripts\Activate.ps1
 python -m pip install .
 # Reinstallation après modifications : python -m pip install --force-reinstall --no-deps .
-synctool
+lucisync
 ```
 
-Sous Linux, `rsync` est utilisé s’il est installé. Sous Windows, Synctool utilise `robocopy`, fourni avec Windows. Si `rsync` n’est pas disponible, le moteur Python compare tailles et dates, copie seulement les fichiers modifiés et peut reprendre un fichier interrompu.
+Sous Linux, `rsync` est utilisé s’il est installé. Sous Windows, LuCiSync utilise `robocopy`, fourni avec Windows. Si `rsync` n’est pas disponible, le moteur Python compare tailles et dates, copie seulement les fichiers modifiés et peut reprendre un fichier interrompu.
 
 ## Utilisation
 
@@ -31,5 +31,7 @@ La synchronisation est à sens unique : elle copie ou met à jour les fichiers d
 
 ## Fichiers locaux
 
-- Configuration : `%APPDATA%\Synctool\config.json` sous Windows, ou `$XDG_CONFIG_HOME/synctool/config.json` sous Linux (par défaut `~/.config/synctool/config.json`).
+- Configuration : `%APPDATA%\LuCiSync\config.json` sous Windows, ou `$XDG_CONFIG_HOME/lucisync/config.json` sous Linux (par défaut `~/.config/lucisync/config.json`).
 - Journal : `sync-history.jsonl` dans le même dossier.
+
+Les réglages et l’historique de l’ancienne version sont repris au premier lancement.

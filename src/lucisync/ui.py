@@ -31,11 +31,14 @@ from PySide6.QtWidgets import (
 from .core import (
     DEFAULT_CONFIG,
     DEFAULT_JOURNAL,
+    LEGACY_CONFIG,
+    LEGACY_JOURNAL,
     Location,
     SyncResult,
     append_history,
     discover_locations,
     load_config,
+    migrate_legacy_data,
     recent_history,
     safe_target_relative,
     save_config,
@@ -76,7 +79,7 @@ QMenu::item:selected { background: #e8f3f2; }
 
 
 class SourceTable(QTableWidget):
-    ROW_MIME = "application/x-synctool-row-list"
+    ROW_MIME = "application/x-lucisync-row-list"
 
     def __init__(self, owner: "MainWindow") -> None:
         super().__init__(0, 5, owner)
@@ -176,7 +179,12 @@ class SyncWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Synctool · Synchronisation de fichiers")
+        try:
+            migrate_legacy_data()
+            self.migration_error = ""
+        except OSError as error:
+            self.migration_error = str(error)
+        self.setWindowTitle("LuCiSync · Synchronisation de fichiers")
         self.resize(1120, 790)
         self.setMinimumSize(900, 650)
         self.setStyleSheet(STYLE)
@@ -197,7 +205,7 @@ class MainWindow(QMainWindow):
 
         header = QHBoxLayout()
         branding = QVBoxLayout()
-        title = QLabel("Synctool")
+        title = QLabel("LuCiSync")
         title.setObjectName("title")
         subtitle = QLabel("Vos fichiers importants, au bon endroit.")
         subtitle.setObjectName("subtitle")
@@ -217,6 +225,8 @@ class MainWindow(QMainWindow):
         self._build_footer(page)
 
         self._load_default_config()
+        if self.migration_error:
+            self.status_label.setText(f"Migration des anciennes données impossible : {self.migration_error}")
         self.refresh_history()
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
@@ -364,12 +374,13 @@ class MainWindow(QMainWindow):
         page.addLayout(footer)
 
     def _load_default_config(self) -> None:
-        if not DEFAULT_CONFIG.is_file():
+        config_path = DEFAULT_CONFIG if DEFAULT_CONFIG.is_file() else LEGACY_CONFIG
+        if not config_path.is_file():
             self.config_label.setText("Configuration locale · non enregistrée")
             self._render_entries()
             return
         try:
-            destination, entries = load_config(DEFAULT_CONFIG)
+            destination, entries = load_config(config_path)
             self.config_path = DEFAULT_CONFIG
             self.destination_edit.setText(destination)
             self.entries = entries
@@ -411,7 +422,7 @@ class MainWindow(QMainWindow):
         dialog = self._styled_file_dialog("Enregistrer la configuration", str(self.config_path.parent))
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QFileDialog.FileMode.AnyFile)
-        dialog.setNameFilter("Configuration Synctool (*.json)")
+        dialog.setNameFilter("Configuration LuCiSync (*.json)")
         dialog.setDefaultSuffix("json")
         dialog.selectFile(self.config_path.name)
         if dialog.exec() != QFileDialog.DialogCode.Accepted:
@@ -426,7 +437,7 @@ class MainWindow(QMainWindow):
         dialog = self._styled_file_dialog("Charger une configuration", str(self.config_path.parent))
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilter("Configuration Synctool (*.json)")
+        dialog.setNameFilter("Configuration LuCiSync (*.json)")
         if dialog.exec() != QFileDialog.DialogCode.Accepted:
             return
         path = dialog.selectedFiles()[0]
@@ -696,7 +707,8 @@ class MainWindow(QMainWindow):
         self._schedule_save()
 
     def refresh_history(self) -> None:
-        records = recent_history(DEFAULT_JOURNAL, 6)
+        journal_path = DEFAULT_JOURNAL if DEFAULT_JOURNAL.exists() or not LEGACY_JOURNAL.exists() else LEGACY_JOURNAL
+        records = recent_history(journal_path, 6)
         self.history_table.setRowCount(0)
         for record in records:
             row = self.history_table.rowCount()
@@ -716,14 +728,15 @@ class MainWindow(QMainWindow):
         self.history_table.resizeRowsToContents()
 
     def open_journal(self) -> None:
-        DEFAULT_JOURNAL.parent.mkdir(parents=True, exist_ok=True)
-        if not DEFAULT_JOURNAL.exists():
-            DEFAULT_JOURNAL.touch()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(DEFAULT_JOURNAL)))
+        journal_path = DEFAULT_JOURNAL if DEFAULT_JOURNAL.exists() or not LEGACY_JOURNAL.exists() else LEGACY_JOURNAL
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        if not journal_path.exists():
+            journal_path.touch()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(journal_path)))
 
     def closeEvent(self, event) -> None:
         if self.busy:
-            QMessageBox.information(self, "Synchronisation en cours", "Attendez la fin de la synchronisation avant de fermer Synctool.")
+            QMessageBox.information(self, "Synchronisation en cours", "Attendez la fin de la synchronisation avant de fermer LuCiSync.")
             event.ignore()
             return
         self.save_timer.stop()
