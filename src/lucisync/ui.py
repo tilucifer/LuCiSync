@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressBar,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -40,6 +41,7 @@ from .core import (
     load_config,
     migrate_legacy_data,
     recent_history,
+    measure_source_contents,
     safe_target_relative,
     save_config,
     sync_one,
@@ -82,9 +84,9 @@ class SourceTable(QTableWidget):
     ROW_MIME = "application/x-lucisync-row-list"
 
     def __init__(self, owner: "MainWindow") -> None:
-        super().__init__(0, 5, owner)
+        super().__init__(0, 6, owner)
         self.owner = owner
-        self.setHorizontalHeaderLabels(["SOURCE", "CHEMIN DANS LA DESTINATION", "TYPE", "STATUT", ""])
+        self.setHorizontalHeaderLabels(["SOURCE", "CHEMIN DANS LA DESTINATION", "TYPE", "STATUT", "AVANCEMENT", ""])
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDragEnabled(True)
@@ -100,8 +102,11 @@ class SourceTable(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(1, 235)
-        self.setColumnWidth(4, 44)
+        self.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(1, 155)
+        self.setColumnWidth(4, 145)
+        self.setColumnWidth(5, 36)
+        self.verticalHeader().setDefaultSectionSize(50)
         self.setMinimumHeight(205)
 
     def startDrag(self, supported_actions) -> None:
@@ -150,6 +155,7 @@ class SourceTable(QTableWidget):
 
 class SyncWorker(QThread):
     item_started = Signal(str, int, int)
+    item_progress = Signal(str, int, int, int, int, int, int)
     item_finished = Signal(object)
     all_finished = Signal(int, int)
 
@@ -163,7 +169,13 @@ class SyncWorker(QThread):
         successes = failures = 0
         for index, entry in enumerate(self.entries):
             self.item_started.emit(entry["id"], index + 1, len(self.entries))
-            result = sync_one(entry, self.destination)
+
+            def report_progress(bytes_done, bytes_total, files_done, files_total, dirs_done, dirs_total):
+                self.item_progress.emit(
+                    entry["id"], bytes_done, bytes_total, files_done, files_total, dirs_done, dirs_total
+                )
+
+            result = sync_one(entry, self.destination, report_progress)
             if result.status == "success":
                 successes += 1
             else:
@@ -176,6 +188,60 @@ class SyncWorker(QThread):
         self.all_finished.emit(successes, failures)
 
 
+class SourceStatsWorker(QThread):
+    stats_ready = Signal(str, int, int, int)
+    stats_failed = Signal(str, str)
+
+    def __init__(self, entry_id: str, source: str, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.entry_id = entry_id
+        self.source = source
+
+    def run(self) -> None:
+        try:
+            stats = measure_source_contents(self.source, self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                return
+            self.stats_ready.emit(
+                self.entry_id, stats.file_count, stats.directory_count, stats.total_bytes
+            )
+        except (OSError, ValueError) as error:
+            self.stats_failed.emit(self.entry_id, str(error))
+
+
+class ProgressCell(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(6)
+        self.percent_label = QLabel("0%")
+        self.percent_label.setFixedWidth(32)
+        self.percent_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(11)
+        self.bar.setMinimumWidth(64)
+        self.bar.setStyleSheet(
+            "QProgressBar { border: none; border-radius: 5px; background: #e9eff1; }"
+            "QProgressBar::chunk { border-radius: 5px; background: #2b9a8f; }"
+        )
+        layout.addWidget(self.percent_label)
+        layout.addWidget(self.bar, 1)
+
+    def set_progress(self, percent: int, status: str) -> None:
+        percent = max(0, min(100, percent))
+        self.percent_label.setText(f"{percent}%")
+        self.bar.setValue(percent)
+        color = "#b94b4b" if status == "failure" else "#2b9a8f"
+        self.bar.setStyleSheet(
+            "QProgressBar { border: none; border-radius: 5px; background: #e9eff1; }"
+            f"QProgressBar::chunk {{ border-radius: 5px; background: {color}; }}"
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -185,12 +251,14 @@ class MainWindow(QMainWindow):
         except OSError as error:
             self.migration_error = str(error)
         self.setWindowTitle("LuCiSync · Synchronisation de fichiers")
-        self.resize(1120, 790)
-        self.setMinimumSize(900, 650)
+        self.resize(1420, 800)
+        self.setMinimumSize(1180, 650)
         self.setStyleSheet(STYLE)
         self.config_path = DEFAULT_CONFIG
         self.entries: list[dict] = []
         self.worker: SyncWorker | None = None
+        self.stats_workers: dict[str, SourceStatsWorker] = {}
+        self.progress_cells: dict[str, ProgressCell] = {}
         self.busy = False
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
@@ -199,9 +267,11 @@ class MainWindow(QMainWindow):
 
         root = QWidget()
         self.setCentralWidget(root)
-        page = QVBoxLayout(root)
-        page.setContentsMargins(24, 21, 24, 18)
-        page.setSpacing(14)
+        main_layout = QHBoxLayout(root)
+        main_layout.setContentsMargins(20, 18, 20, 16)
+        main_layout.setSpacing(14)
+        page = QVBoxLayout()
+        page.setSpacing(12)
 
         header = QHBoxLayout()
         branding = QVBoxLayout()
@@ -221,8 +291,9 @@ class MainWindow(QMainWindow):
         self._build_config_toolbar(page)
         self._build_destination_card(page)
         self._build_sources_card(page)
-        self._build_history_card(page)
         self._build_footer(page)
+        main_layout.addLayout(page, 3)
+        self._build_history_card(main_layout)
 
         self._load_default_config()
         if self.migration_error:
@@ -336,7 +407,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
         page.addWidget(frame, 1)
 
-    def _build_history_card(self, page: QVBoxLayout) -> None:
+    def _build_history_card(self, page: QHBoxLayout) -> None:
         frame, layout = self._card()
         heading = QHBoxLayout()
         title = QLabel("Dernières synchronisations")
@@ -357,10 +428,12 @@ class MainWindow(QMainWindow):
         self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.history_table.setColumnWidth(1, 240)
-        self.history_table.setMaximumHeight(178)
-        layout.addWidget(self.history_table)
-        page.addWidget(frame)
+        self.history_table.setColumnWidth(1, 110)
+        self.history_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.history_table, 1)
+        frame.setMinimumWidth(330)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        page.addWidget(frame, 1)
 
     def _build_footer(self, page: QVBoxLayout) -> None:
         footer = QHBoxLayout()
@@ -500,17 +573,21 @@ class MainWindow(QMainWindow):
 
     def _render_entries(self) -> None:
         self.table.blockSignals(True)
+        self.progress_cells.clear()
         self.table.setRowCount(0)
         for row, entry in enumerate(self.entries):
             self.table.insertRow(row)
             source = Path(entry["source"])
-            kind = "Dossier" if source.is_dir() else "Fichier"
+            is_directory = source.is_dir()
             source_item = QTableWidgetItem(str(source))
+            source_item.setData(Qt.ItemDataRole.UserRole, entry["id"])
             source_item.setToolTip(str(source))
             source_item.setFlags(source_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             target_item = QTableWidgetItem(entry["target_rel"])
             target_item.setToolTip("Chemin relatif sous le dossier de destination. Double-cliquez pour le modifier.")
-            kind_item = QTableWidgetItem(kind)
+            kind_text = self._folder_type_text(entry) if is_directory else "Fichier"
+            kind_item = QTableWidgetItem(kind_text)
+            kind_item.setToolTip(kind_text)
             kind_item.setFlags(kind_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             state = entry.get("status", "idle")
             state_text = {"idle": "En attente", "running": "En cours…", "success": "Réussi", "failure": "Échec"}.get(state, state)
@@ -528,15 +605,94 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 1, target_item)
             self.table.setItem(row, 2, kind_item)
             self.table.setItem(row, 3, status_item)
+
+            progress = ProgressCell()
+            progress.set_progress(self._entry_progress_percent(entry), state)
+            self.progress_cells[entry["id"]] = progress
+            self.table.setCellWidget(row, 4, progress)
             remove = QToolButton()
             remove.setText("×")
             remove.setToolTip("Supprimer cette ligne")
             remove.setStyleSheet("QToolButton { border: none; color: #8d9ba4; font-size: 19px; padding: 1px; } QToolButton:hover { color: #b34242; background: #fff0f0; }")
             remove.clicked.connect(lambda _checked=False, entry_id=entry["id"]: self.remove_entry(entry_id))
-            self.table.setCellWidget(row, 4, remove)
+            self.table.setCellWidget(row, 5, remove)
+            if is_directory and entry.get("file_count") is None and not entry.get("stats_error"):
+                self._start_source_stats_scan(entry)
         self.table.blockSignals(False)
         self.count_label.setText(f"{len(self.entries)} élément(s) · glisser-déposer pour réordonner")
         self._validate_targets()
+
+    def _folder_type_text(self, entry: dict) -> str:
+        if entry.get("stats_error"):
+            return "Dossier · inaccessible"
+        file_count = entry.get("file_count")
+        directory_count = entry.get("directory_count")
+        if file_count is None or directory_count is None:
+            return "Dossier · calcul…"
+        files_word = "fichier" if file_count == 1 else "fichiers"
+        directories_word = "dossier" if directory_count == 1 else "dossiers"
+        return f"Dossier · {file_count} {files_word} · {directory_count} {directories_word}"
+
+    def _entry_progress_percent(self, entry: dict) -> int:
+        if entry.get("status") == "success":
+            return 100
+        total_bytes = entry.get("total_bytes", 0) or 0
+        if total_bytes:
+            return max(0, min(100, int((entry.get("bytes_done", 0) or 0) * 100 / total_bytes)))
+        total_units = (entry.get("file_count", 0) or 0) + (entry.get("directory_count", 0) or 0)
+        completed_units = (entry.get("files_done", 0) or 0) + (entry.get("directories_done", 0) or 0)
+        return max(0, min(100, int(completed_units * 100 / total_units))) if total_units else 0
+
+    def _start_source_stats_scan(self, entry: dict) -> None:
+        entry_id = entry["id"]
+        if entry_id in self.stats_workers:
+            return
+        worker = SourceStatsWorker(entry_id, entry["source"], self)
+        worker.stats_ready.connect(self._source_stats_ready)
+        worker.stats_failed.connect(self._source_stats_failed)
+        worker.finished.connect(lambda key=entry_id: self.stats_workers.pop(key, None))
+        self.stats_workers[entry_id] = worker
+        worker.start()
+
+    def _source_stats_ready(self, entry_id: str, files: int, directories: int, total_bytes: int) -> None:
+        entry = next((item for item in self.entries if item["id"] == entry_id), None)
+        if entry is None:
+            return
+        entry["file_count"] = files
+        entry["directory_count"] = directories
+        if entry.get("status") != "running":
+            entry["total_bytes"] = total_bytes
+        entry.pop("stats_error", None)
+        self._update_entry_cells(entry)
+
+    def _source_stats_failed(self, entry_id: str, message: str) -> None:
+        entry = next((item for item in self.entries if item["id"] == entry_id), None)
+        if entry is None:
+            return
+        entry["stats_error"] = message
+        self._update_entry_cells(entry)
+
+    def _update_entry_cells(self, entry: dict) -> None:
+        entry_id = entry["id"]
+        progress = self.progress_cells.get(entry_id)
+        if progress:
+            status = entry.get("status", "idle")
+            percent = self._entry_progress_percent(entry)
+            progress.set_progress(percent, status)
+            if entry.get("file_count") is not None:
+                progress.setToolTip(
+                    f"{entry.get('files_done', 0)} / {entry['file_count']} fichiers · "
+                    f"{entry.get('directories_done', 0)} / {entry.get('directory_count', 0)} dossiers"
+                )
+        for row in range(self.table.rowCount()):
+            source_item = self.table.item(row, 0)
+            if source_item and source_item.data(Qt.ItemDataRole.UserRole) == entry_id:
+                kind_item = self.table.item(row, 2)
+                if kind_item:
+                    kind_text = self._folder_type_text(entry) if Path(entry["source"]).is_dir() else "Fichier"
+                    kind_item.setText(kind_text)
+                    kind_item.setToolTip(entry.get("stats_error", kind_text))
+                break
 
     def _validate_targets(self) -> bool:
         self.table.blockSignals(True)
@@ -664,6 +820,7 @@ class MainWindow(QMainWindow):
         self._render_entries()
         self.worker = SyncWorker(self.entries, destination, self.config_path)
         self.worker.item_started.connect(self._item_started)
+        self.worker.item_progress.connect(self._item_progress)
         self.worker.item_finished.connect(self._item_finished)
         self.worker.all_finished.connect(self._sync_finished)
         self.status_label.setText("Synchronisation en préparation…")
@@ -685,9 +842,36 @@ class MainWindow(QMainWindow):
             if entry["id"] == entry_id:
                 entry["status"] = "running"
                 entry["message"] = "Synchronisation en cours…"
+                entry["bytes_done"] = 0
+                entry["files_done"] = 0
+                entry["directories_done"] = 0
                 self.status_label.setText(f"Synchronisation {index}/{total} · {Path(entry['source']).name}")
                 break
         self._render_entries()
+
+    def _item_progress(
+        self,
+        entry_id: str,
+        bytes_done: int,
+        bytes_total: int,
+        files_done: int,
+        files_total: int,
+        directories_done: int,
+        directories_total: int,
+    ) -> None:
+        entry = next((item for item in self.entries if item["id"] == entry_id), None)
+        if entry is None:
+            return
+        entry.update({
+            "bytes_done": bytes_done,
+            "total_bytes": bytes_total,
+            "files_done": files_done,
+            "file_count": files_total,
+            "directories_done": directories_done,
+            "directory_count": directories_total,
+        })
+        entry.pop("stats_error", None)
+        self._update_entry_cells(entry)
 
     def _item_finished(self, result: SyncResult) -> None:
         for entry in self.entries:
@@ -739,6 +923,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Synchronisation en cours", "Attendez la fin de la synchronisation avant de fermer LuCiSync.")
             event.ignore()
             return
+        for worker in list(self.stats_workers.values()):
+            worker.requestInterruption()
+        for worker in list(self.stats_workers.values()):
+            worker.wait()
         self.save_timer.stop()
         self._save_active_silently()
         event.accept()

@@ -198,6 +198,41 @@ class SyncResult:
     duration_seconds: float
 
 
+@dataclass(frozen=True)
+class SourceStats:
+    file_count: int
+    directory_count: int
+    total_bytes: int
+
+
+ProgressCallback = Callable[[int, int, int, int, int, int], None]
+
+
+def measure_source_contents(
+    source: Path | str,
+    should_cancel: Callable[[], bool] | None = None,
+) -> SourceStats:
+    """Count files, subdirectories and bytes in a file or directory source."""
+    source = Path(source)
+    if source.is_file():
+        return SourceStats(1, 0, source.stat().st_size)
+    if not source.is_dir():
+        raise FileNotFoundError(f"Source introuvable : {source}")
+
+    file_count = directory_count = total_bytes = 0
+    for root, dirs, files in os.walk(source, followlinks=False):
+        if should_cancel and should_cancel():
+            break
+        root_path = Path(root)
+        directory_count += sum(not (root_path / name).is_symlink() for name in dirs)
+        for name in files:
+            candidate = root_path / name
+            if candidate.is_file():
+                file_count += 1
+                total_bytes += candidate.stat().st_size
+    return SourceStats(file_count, directory_count, total_bytes)
+
+
 def _same_file(source: Path, destination: Path) -> bool:
     try:
         source_stat = source.stat()
@@ -207,7 +242,11 @@ def _same_file(source: Path, destination: Path) -> bool:
         return False
 
 
-def _copy_resumable(source: Path, destination: Path) -> bool:
+def _copy_resumable(
+    source: Path,
+    destination: Path,
+    on_bytes_copied: Callable[[int], None] | None = None,
+) -> bool:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if _same_file(source, destination):
         return False
@@ -232,7 +271,12 @@ def _copy_resumable(source: Path, destination: Path) -> bool:
             metadata.write_text(json.dumps(expected), encoding="utf-8")
         with source.open("rb") as src, partial.open("ab" if offset else "wb") as dst:
             src.seek(offset)
-            shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+            if offset and on_bytes_copied:
+                on_bytes_copied(offset)
+            while chunk := src.read(8 * 1024 * 1024):
+                dst.write(chunk)
+                if on_bytes_copied:
+                    on_bytes_copied(len(chunk))
         shutil.copystat(source, partial)
         os.replace(partial, destination)
         metadata.unlink(missing_ok=True)
@@ -242,9 +286,36 @@ def _copy_resumable(source: Path, destination: Path) -> bool:
     return True
 
 
-def _python_copy(source: Path, target: Path) -> tuple[int, int]:
+def _python_copy(
+    source: Path,
+    target: Path,
+    progress_callback: ProgressCallback | None = None,
+    stats: SourceStats | None = None,
+) -> tuple[int, int]:
+    completed_bytes = completed_files = completed_directories = 0
+
+    def report() -> None:
+        if progress_callback and stats:
+            progress_callback(
+                completed_bytes,
+                stats.total_bytes,
+                completed_files,
+                stats.file_count,
+                completed_directories,
+                stats.directory_count,
+            )
+
+    def report_bytes(amount: int) -> None:
+        nonlocal completed_bytes
+        completed_bytes += amount
+        report()
+
     if source.is_file():
-        copied = int(_copy_resumable(source, target))
+        copied = int(_copy_resumable(source, target, report_bytes))
+        if not copied:
+            completed_bytes += source.stat().st_size
+        completed_files = 1
+        report()
         return copied, 1 - copied
     if not source.is_dir():
         raise FileNotFoundError(f"Source introuvable : {source}")
@@ -260,14 +331,20 @@ def _python_copy(source: Path, target: Path) -> tuple[int, int]:
             candidate = root_path / directory
             if not candidate.is_symlink():
                 (dest_dir / directory).mkdir(parents=True, exist_ok=True)
+                completed_directories += 1
+                report()
         for filename in files:
             candidate = root_path / filename
             output = dest_dir / filename
             if candidate.is_file():
-                if _copy_resumable(candidate, output):
+                copied_file = _copy_resumable(candidate, output, report_bytes)
+                if copied_file:
                     copied += 1
                 else:
                     skipped += 1
+                    completed_bytes += candidate.stat().st_size
+                completed_files += 1
+                report()
     return copied, skipped
 
 
@@ -297,7 +374,11 @@ def _run_robocopy(source: Path, target: Path) -> str:
     return f"robocopy terminé (code {completed.returncode})."
 
 
-def sync_one(entry: dict, destination_root: str) -> SyncResult:
+def sync_one(
+    entry: dict,
+    destination_root: str,
+    progress_callback: ProgressCallback | None = None,
+) -> SyncResult:
     started_at = utc_now()
     start = time.monotonic()
     source = Path(entry["source"]).expanduser().resolve()
@@ -313,10 +394,19 @@ def sync_one(entry: dict, destination_root: str) -> SyncResult:
         if source.is_dir() and (target_resolved == source_resolved or source_resolved in target_resolved.parents):
             raise ValueError("La destination de cet élément se trouve dans sa source.")
         if source.is_file() and target_resolved == source_resolved:
+            if progress_callback:
+                stats = measure_source_contents(source)
+                progress_callback(stats.total_bytes, stats.total_bytes, stats.file_count, stats.file_count, 0, 0)
             return SyncResult(entry["id"], str(source), target_rel, "success", "Déjà au même emplacement.", "—", started_at, time.monotonic() - start)
 
         destination.mkdir(parents=True, exist_ok=True)
-        if os.name == "nt" and shutil.which("robocopy"):
+        if progress_callback:
+            method = "Python"
+            stats = measure_source_contents(source)
+            progress_callback(0, stats.total_bytes, 0, stats.file_count, 0, stats.directory_count)
+            copied, skipped = _python_copy(source, target, progress_callback, stats)
+            message = f"{copied} fichier(s) copié(s), {skipped} inchangé(s)."
+        elif os.name == "nt" and shutil.which("robocopy"):
             method = "robocopy"
             message = _run_robocopy(source, target)
         elif os.name != "nt" and shutil.which("rsync"):
