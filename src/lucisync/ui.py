@@ -5,7 +5,7 @@ import os
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QMimeData, QPoint, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDrag, QDesktopServices, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QSizePolicy,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -84,9 +85,9 @@ class SourceTable(QTableWidget):
     ROW_MIME = "application/x-lucisync-row-list"
 
     def __init__(self, owner: "MainWindow") -> None:
-        super().__init__(0, 6, owner)
+        super().__init__(0, 5, owner)
         self.owner = owner
-        self.setHorizontalHeaderLabels(["SOURCE", "CHEMIN DANS LA DESTINATION", "TYPE", "STATUT", "AVANCEMENT", ""])
+        self.setHorizontalHeaderLabels(["SOURCE", "TYPE", "STATUT", "AVANCEMENT", ""])
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDragEnabled(True)
@@ -98,14 +99,12 @@ class SourceTable(QTableWidget):
         self.verticalHeader().hide()
         self.verticalHeader().setDefaultSectionSize(46)
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(1, 155)
-        self.setColumnWidth(4, 145)
-        self.setColumnWidth(5, 36)
+        self.setColumnWidth(3, 145)
+        self.setColumnWidth(4, 36)
         self.verticalHeader().setDefaultSectionSize(50)
         self.setMinimumHeight(205)
 
@@ -254,6 +253,7 @@ class MainWindow(QMainWindow):
         self.resize(1420, 800)
         self.setMinimumSize(1180, 650)
         self.setStyleSheet(STYLE)
+        self.settings = QSettings("LuCiSync", "LuCiSync")
         self.config_path = DEFAULT_CONFIG
         self.entries: list[dict] = []
         self.worker: SyncWorker | None = None
@@ -264,13 +264,22 @@ class MainWindow(QMainWindow):
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(450)
         self.save_timer.timeout.connect(self._save_active_silently)
+        self.display_preferences_timer = QTimer(self)
+        self.display_preferences_timer.setSingleShot(True)
+        self.display_preferences_timer.setInterval(450)
+        self.display_preferences_timer.timeout.connect(self._save_display_preferences)
 
         root = QWidget()
         self.setCentralWidget(root)
-        main_layout = QHBoxLayout(root)
-        main_layout.setContentsMargins(20, 18, 20, 16)
-        main_layout.setSpacing(14)
-        page = QVBoxLayout()
+        main_layout = QVBoxLayout(root)
+        main_layout.setContentsMargins(18, 16, 18, 14)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal, root)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(8)
+        self.main_splitter.splitterMoved.connect(self._schedule_display_preferences)
+        self.left_panel = QWidget()
+        page = QVBoxLayout(self.left_panel)
+        page.setContentsMargins(0, 0, 0, 0)
         page.setSpacing(12)
 
         header = QHBoxLayout()
@@ -283,17 +292,19 @@ class MainWindow(QMainWindow):
         branding.addWidget(subtitle)
         header.addLayout(branding)
         header.addStretch(1)
-        self.config_label = QLabel()
-        self.config_label.setObjectName("muted")
-        header.addWidget(self.config_label)
         page.addLayout(header)
 
         self._build_config_toolbar(page)
-        self._build_destination_card(page)
         self._build_sources_card(page)
+        self._build_destination_card(page)
         self._build_footer(page)
-        main_layout.addLayout(page, 3)
-        self._build_history_card(main_layout)
+        self.main_splitter.addWidget(self.left_panel)
+        self.history_frame = self._build_history_card()
+        self.main_splitter.addWidget(self.history_frame)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 1)
+        main_layout.addWidget(self.main_splitter, 1)
+        self._restore_display_preferences()
 
         self._load_default_config()
         if self.migration_error:
@@ -309,35 +320,12 @@ class MainWindow(QMainWindow):
         return frame, layout
 
     def _build_config_toolbar(self, page: QVBoxLayout) -> None:
-        bar = QHBoxLayout()
-        bar.setSpacing(12)
-
-        config_group = QFrame()
-        config_group.setObjectName("toolGroup")
-        config_layout = QVBoxLayout(config_group)
-        config_layout.setContentsMargins(13, 10, 13, 11)
-        config_layout.setSpacing(7)
-        config_title = QLabel("1 · CONFIGURATION")
-        config_title.setObjectName("groupLabel")
-        config_layout.addWidget(config_title)
-        config_buttons = QHBoxLayout()
-        config_buttons.setSpacing(8)
-        self.load_button = QPushButton("Charger")
-        self.save_button = QPushButton("Enregistrer")
-        self.save_as_button = QPushButton("Enregistrer sous…")
-        self.load_button.clicked.connect(self.load_as)
-        self.save_button.clicked.connect(self.save_now)
-        self.save_as_button.clicked.connect(self.save_as)
-        for button in (self.load_button, self.save_button, self.save_as_button):
-            config_buttons.addWidget(button)
-        config_layout.addLayout(config_buttons)
-
         source_group = QFrame()
         source_group.setObjectName("sourceToolsGroup")
         source_layout = QVBoxLayout(source_group)
         source_layout.setContentsMargins(13, 10, 13, 11)
         source_layout.setSpacing(7)
-        source_title = QLabel("2 · ÉLÉMENTS À AJOUTER")
+        source_title = QLabel("ÉLÉMENTS À AJOUTER")
         source_title.setObjectName("groupLabel")
         source_layout.addWidget(source_title)
         source_buttons = QHBoxLayout()
@@ -349,11 +337,9 @@ class MainWindow(QMainWindow):
         self.add_folder_button.clicked.connect(self.choose_folder)
         source_buttons.addWidget(self.add_files_button)
         source_buttons.addWidget(self.add_folder_button)
+        source_buttons.addStretch(1)
         source_layout.addLayout(source_buttons)
-
-        bar.addWidget(config_group, 3)
-        bar.addWidget(source_group, 2)
-        page.addLayout(bar)
+        page.addWidget(source_group)
 
     def _build_destination_card(self, page: QVBoxLayout) -> None:
         frame, layout = self._card()
@@ -400,14 +386,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(heading)
 
         self.table = SourceTable(self)
-        self.table.cellChanged.connect(self._cell_changed)
         layout.addWidget(self.table, 1)
-        hint = QLabel("Glissez des fichiers ici pour les ajouter. Faites glisser une ligne pour changer l’ordre. Double-cliquez sur son chemin cible pour le modifier.")
+        hint = QLabel("Glissez des fichiers ici pour les ajouter. Faites glisser une ligne pour changer l’ordre.")
         hint.setObjectName("hint")
         layout.addWidget(hint)
         page.addWidget(frame, 1)
 
-    def _build_history_card(self, page: QHBoxLayout) -> None:
+    def _build_history_card(self) -> QFrame:
         frame, layout = self._card()
         heading = QHBoxLayout()
         title = QLabel("Dernières synchronisations")
@@ -433,10 +418,40 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.history_table, 1)
         frame.setMinimumWidth(330)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        page.addWidget(frame, 1)
+        return frame
 
     def _build_footer(self, page: QVBoxLayout) -> None:
         footer = QHBoxLayout()
+        footer.setSpacing(7)
+        config_title = QLabel("CONFIGURATION")
+        config_title.setObjectName("groupLabel")
+        footer.addWidget(config_title)
+
+        self.load_button = QPushButton("Charger")
+        self.save_button = QPushButton("Enregistrer")
+        self.save_as_button = QPushButton("Sous…")
+        self.load_button.clicked.connect(self.load_as)
+        self.save_button.clicked.connect(self.save_now)
+        self.save_as_button.clicked.connect(self.save_as)
+        self.save_as_button.setToolTip("Enregistrer la configuration sous un autre nom")
+        footer.addWidget(self.load_button)
+        footer.addWidget(self.save_button)
+        footer.addWidget(self.save_as_button)
+
+        self.save_display_button = QPushButton("Enregistrer l’affichage")
+        self.save_display_button.setToolTip("Mémoriser la taille des volets et l’état de l’historique")
+        self.save_display_button.clicked.connect(self._save_display_preferences)
+        footer.addWidget(self.save_display_button)
+        self.history_toggle_button = QToolButton()
+        self.history_toggle_button.clicked.connect(self._toggle_history_panel)
+        footer.addWidget(self.history_toggle_button)
+
+        self.config_label = QLabel()
+        self.config_label.setObjectName("muted")
+        self.config_label.setMaximumWidth(135)
+        self.config_label.setToolTip("Configuration active")
+        footer.addWidget(self.config_label)
+
         self.status_label = QLabel("Prêt")
         self.status_label.setObjectName("muted")
         footer.addWidget(self.status_label, 1)
@@ -445,6 +460,66 @@ class MainWindow(QMainWindow):
         self.sync_button.clicked.connect(self.start_sync)
         footer.addWidget(self.sync_button)
         page.addLayout(footer)
+
+    def _restore_display_preferences(self) -> None:
+        geometry = self.settings.value("window/geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
+        saved_sizes = self.settings.value("display/splitter_sizes", [900, 420])
+        try:
+            if isinstance(saved_sizes, str):
+                saved_sizes = [int(part.strip()) for part in saved_sizes.strip("[]").split(",")]
+            saved_sizes = [int(size) for size in saved_sizes]
+        except (TypeError, ValueError):
+            saved_sizes = [900, 420]
+        self._saved_splitter_sizes = saved_sizes[:2] if len(saved_sizes) >= 2 else [900, 420]
+
+        visible = self.settings.value("display/history_visible", True)
+        if isinstance(visible, str):
+            visible = visible.strip().lower() not in {"0", "false", "no", "off"}
+        self.history_frame.setVisible(bool(visible))
+        if visible:
+            self.main_splitter.setSizes(self._saved_splitter_sizes)
+        self._update_history_toggle_button()
+
+    def _save_display_preferences(self, *_args) -> None:
+        if not hasattr(self, "history_frame"):
+            return
+        self.settings.setValue("window/geometry", self.saveGeometry())
+        visible = not self.history_frame.isHidden()
+        self.settings.setValue("display/history_visible", visible)
+        if visible:
+            sizes = self.main_splitter.sizes()
+            if len(sizes) >= 2 and sizes[1] > 0:
+                self._saved_splitter_sizes = sizes[:2]
+        self.settings.setValue("display/splitter_sizes", self._saved_splitter_sizes)
+        self.settings.sync()
+
+    def _schedule_display_preferences(self, *_args) -> None:
+        self.display_preferences_timer.start()
+
+    def _toggle_history_panel(self) -> None:
+        if self.history_frame.isHidden():
+            self.history_frame.show()
+            self.main_splitter.setSizes(self._saved_splitter_sizes)
+        else:
+            sizes = self.main_splitter.sizes()
+            if len(sizes) >= 2 and sizes[1] > 0:
+                self._saved_splitter_sizes = sizes[:2]
+            self.history_frame.hide()
+        self._update_history_toggle_button()
+        self._save_display_preferences()
+
+    def _update_history_toggle_button(self) -> None:
+        if not hasattr(self, "history_toggle_button") or not hasattr(self, "history_frame"):
+            return
+        visible = not self.history_frame.isHidden()
+        self.history_toggle_button.setText("− Historique" if visible else "+ Historique")
+        self.history_toggle_button.setToolTip(
+            "Réduire le volet des dernières synchronisations"
+            if visible else "Afficher le volet des dernières synchronisations"
+        )
 
     def _load_default_config(self) -> None:
         config_path = DEFAULT_CONFIG if DEFAULT_CONFIG.is_file() else LEGACY_CONFIG
@@ -556,7 +631,17 @@ class MainWindow(QMainWindow):
             try:
                 target_rel = safe_target_relative(target_rel)
             except ValueError:
-                target_rel = name
+                target_rel = safe_target_relative("source")
+            used_targets = {entry.get("target_rel", "").casefold() for entry in self.entries}
+            parent, separator, filename = target_rel.rpartition("/")
+            stem, suffix = os.path.splitext(filename)
+            candidate = target_rel
+            index = 2
+            while candidate.casefold() in used_targets:
+                unique_name = f"{stem or filename} ({index}){suffix}"
+                candidate = f"{parent}/{unique_name}" if separator else unique_name
+                index += 1
+            target_rel = candidate
             self.entries.append({
                 "id": str(uuid.uuid4()),
                 "source": str(source),
@@ -572,6 +657,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"{added} élément(s) ajouté(s)")
 
     def _render_entries(self) -> None:
+        self._validate_targets()
         self.table.blockSignals(True)
         self.progress_cells.clear()
         self.table.setRowCount(0)
@@ -581,10 +667,8 @@ class MainWindow(QMainWindow):
             is_directory = source.is_dir()
             source_item = QTableWidgetItem(str(source))
             source_item.setData(Qt.ItemDataRole.UserRole, entry["id"])
-            source_item.setToolTip(str(source))
+            source_item.setToolTip(f"{source}\nDestination : {entry['target_rel']}")
             source_item.setFlags(source_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            target_item = QTableWidgetItem(entry["target_rel"])
-            target_item.setToolTip("Chemin relatif sous le dossier de destination. Double-cliquez pour le modifier.")
             kind_text = self._folder_type_text(entry) if is_directory else "Fichier"
             kind_item = QTableWidgetItem(kind_text)
             kind_item.setToolTip(kind_text)
@@ -602,25 +686,23 @@ class MainWindow(QMainWindow):
             if entry.get("message"):
                 status_item.setToolTip(entry["message"])
             self.table.setItem(row, 0, source_item)
-            self.table.setItem(row, 1, target_item)
-            self.table.setItem(row, 2, kind_item)
-            self.table.setItem(row, 3, status_item)
+            self.table.setItem(row, 1, kind_item)
+            self.table.setItem(row, 2, status_item)
 
             progress = ProgressCell()
             progress.set_progress(self._entry_progress_percent(entry), state)
             self.progress_cells[entry["id"]] = progress
-            self.table.setCellWidget(row, 4, progress)
+            self.table.setCellWidget(row, 3, progress)
             remove = QToolButton()
             remove.setText("×")
             remove.setToolTip("Supprimer cette ligne")
             remove.setStyleSheet("QToolButton { border: none; color: #8d9ba4; font-size: 19px; padding: 1px; } QToolButton:hover { color: #b34242; background: #fff0f0; }")
             remove.clicked.connect(lambda _checked=False, entry_id=entry["id"]: self.remove_entry(entry_id))
-            self.table.setCellWidget(row, 5, remove)
+            self.table.setCellWidget(row, 4, remove)
             if is_directory and entry.get("file_count") is None and not entry.get("stats_error"):
                 self._start_source_stats_scan(entry)
         self.table.blockSignals(False)
         self.count_label.setText(f"{len(self.entries)} élément(s) · glisser-déposer pour réordonner")
-        self._validate_targets()
 
     def _folder_type_text(self, entry: dict) -> str:
         if entry.get("stats_error"):
@@ -687,7 +769,7 @@ class MainWindow(QMainWindow):
         for row in range(self.table.rowCount()):
             source_item = self.table.item(row, 0)
             if source_item and source_item.data(Qt.ItemDataRole.UserRole) == entry_id:
-                kind_item = self.table.item(row, 2)
+                kind_item = self.table.item(row, 1)
                 if kind_item:
                     kind_text = self._folder_type_text(entry) if Path(entry["source"]).is_dir() else "Fichier"
                     kind_item.setText(kind_text)
@@ -695,42 +777,24 @@ class MainWindow(QMainWindow):
                 break
 
     def _validate_targets(self) -> bool:
-        self.table.blockSignals(True)
-        counts: dict[str, list[int]] = {}
-        valid = True
-        for row, entry in enumerate(self.entries):
-            item = self.table.item(row, 1)
-            if item is None:
-                continue
+        used: set[str] = set()
+        for entry in self.entries:
+            fallback = Path(entry["source"]).name or "source"
             try:
-                normalized = safe_target_relative(item.text())
-                entry["target_rel"] = normalized
-                counts.setdefault(normalized.casefold(), []).append(row)
-                item.setBackground(QColor("#ffffff"))
-                item.setToolTip("Chemin relatif sous le dossier de destination.")
-            except ValueError as error:
-                valid = False
-                item.setBackground(QColor("#fde6e4"))
-                item.setToolTip(str(error))
-        for rows in counts.values():
-            if len(rows) > 1:
-                valid = False
-                for row in rows:
-                    item = self.table.item(row, 1)
-                    if item:
-                        item.setBackground(QColor("#fff1d6"))
-                        item.setToolTip("Plusieurs sources ont le même chemin cible. Modifiez ce chemin pour éviter qu’elles s’écrasent.")
-        self.table.blockSignals(False)
-        return valid
-
-    def _cell_changed(self, row: int, column: int) -> None:
-        if column != 1 or row >= len(self.entries):
-            return
-        item = self.table.item(row, column)
-        if item:
-            self.entries[row]["target_rel"] = item.text()
-            self._validate_targets()
-            self._schedule_save()
+                target = safe_target_relative(entry.get("target_rel", fallback))
+            except ValueError:
+                target = safe_target_relative(fallback)
+            parent, separator, filename = target.rpartition("/")
+            stem, suffix = os.path.splitext(filename)
+            candidate = target
+            index = 2
+            while candidate.casefold() in used:
+                unique_name = f"{stem or filename} ({index}){suffix}"
+                candidate = f"{parent}/{unique_name}" if separator else unique_name
+                index += 1
+            entry["target_rel"] = candidate
+            used.add(candidate.casefold())
+        return True
 
     def remove_entry(self, entry_id: str) -> None:
         self.entries = [entry for entry in self.entries if entry["id"] != entry_id]
@@ -918,6 +982,11 @@ class MainWindow(QMainWindow):
             journal_path.touch()
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(journal_path)))
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "display_preferences_timer"):
+            self.display_preferences_timer.start()
+
     def closeEvent(self, event) -> None:
         if self.busy:
             QMessageBox.information(self, "Synchronisation en cours", "Attendez la fin de la synchronisation avant de fermer LuCiSync.")
@@ -927,6 +996,8 @@ class MainWindow(QMainWindow):
             worker.requestInterruption()
         for worker in list(self.stats_workers.values()):
             worker.wait()
+        self.display_preferences_timer.stop()
+        self._save_display_preferences()
         self.save_timer.stop()
         self._save_active_silently()
         event.accept()
