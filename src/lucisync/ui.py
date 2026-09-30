@@ -5,8 +5,8 @@ import os
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QPoint, QSettings, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDrag, QDesktopServices, QColor, QFont
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, QSettings, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDrag, QDesktopServices, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -47,6 +47,54 @@ from .core import (
     save_config,
     sync_one,
 )
+
+
+def create_application_icon() -> QIcon:
+    pixmap = QPixmap(128, 128)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#123b50"))
+    painter.drawRoundedRect(QRectF(4, 4, 120, 120), 28, 28)
+
+    def arrow_head(tip: tuple[float, float], wing_a: tuple[float, float], wing_b: tuple[float, float], color: str) -> None:
+        head = QPainterPath()
+        head.moveTo(QPointF(*tip))
+        head.lineTo(QPointF(*wing_a))
+        head.lineTo(QPointF(*wing_b))
+        head.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawPath(head)
+
+    top_arrow = QPainterPath()
+    top_arrow.moveTo(35, 41)
+    top_arrow.cubicTo(48, 22, 76, 22, 91, 43)
+    painter.setPen(QPen(QColor("#56dbc2"), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawPath(top_arrow)
+    arrow_head((93, 47), (80, 45), (89, 35), "#56dbc2")
+
+    bottom_arrow = QPainterPath()
+    bottom_arrow.moveTo(93, 85)
+    bottom_arrow.cubicTo(78, 106, 50, 106, 35, 84)
+    painter.setPen(QPen(QColor("#6fb8ff"), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawPath(bottom_arrow)
+    arrow_head((33, 80), (46, 82), (37, 92), "#6fb8ff")
+
+    painter.setPen(QPen(QColor("#d7fff7"), 2))
+    painter.setBrush(QColor("#174b5b"))
+    painter.drawRoundedRect(QRectF(42, 43, 44, 42), 8, 8)
+    for y in (54, 64, 74):
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#56dbc2"))
+        painter.drawEllipse(QRectF(50, y - 2, 4, 4))
+        painter.setPen(QPen(QColor("#d7fff7"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(60, y), QPointF(77, y))
+    painter.end()
+    return QIcon(pixmap)
 
 
 STYLE = """
@@ -215,7 +263,7 @@ class ProgressCell(QWidget):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(6)
         self.percent_label = QLabel("0%")
-        self.percent_label.setFixedWidth(32)
+        self.percent_label.setFixedWidth(40)
         self.percent_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
@@ -421,11 +469,13 @@ class MainWindow(QMainWindow):
         return frame
 
     def _build_footer(self, page: QVBoxLayout) -> None:
-        footer = QHBoxLayout()
-        footer.setSpacing(7)
+        footer = QVBoxLayout()
+        footer.setSpacing(3)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(7)
         config_title = QLabel("CONFIGURATION")
         config_title.setObjectName("groupLabel")
-        footer.addWidget(config_title)
+        buttons.addWidget(config_title)
 
         self.load_button = QPushButton("Charger")
         self.save_button = QPushButton("Enregistrer")
@@ -434,31 +484,35 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self.save_now)
         self.save_as_button.clicked.connect(self.save_as)
         self.save_as_button.setToolTip("Enregistrer la configuration sous un autre nom")
-        footer.addWidget(self.load_button)
-        footer.addWidget(self.save_button)
-        footer.addWidget(self.save_as_button)
+        buttons.addWidget(self.load_button)
+        buttons.addWidget(self.save_button)
+        buttons.addWidget(self.save_as_button)
 
         self.save_display_button = QPushButton("Enregistrer l’affichage")
         self.save_display_button.setToolTip("Mémoriser la taille des volets et l’état de l’historique")
-        self.save_display_button.clicked.connect(self._save_display_preferences)
-        footer.addWidget(self.save_display_button)
-        self.history_toggle_button = QToolButton()
-        self.history_toggle_button.clicked.connect(self._toggle_history_panel)
-        footer.addWidget(self.history_toggle_button)
+        self.save_display_button.clicked.connect(self._save_display_preferences_explicit)
+        buttons.addWidget(self.save_display_button)
+        buttons.addStretch(1)
 
-        self.config_label = QLabel()
-        self.config_label.setObjectName("muted")
-        self.config_label.setMaximumWidth(135)
-        self.config_label.setToolTip("Configuration active")
-        footer.addWidget(self.config_label)
-
-        self.status_label = QLabel("Prêt")
-        self.status_label.setObjectName("muted")
-        footer.addWidget(self.status_label, 1)
         self.sync_button = QPushButton("Synchroniser maintenant  →")
         self.sync_button.setObjectName("primary")
         self.sync_button.clicked.connect(self.start_sync)
-        footer.addWidget(self.sync_button)
+        buttons.addWidget(self.sync_button)
+        self.history_toggle_button = QPushButton()
+        self.history_toggle_button.clicked.connect(self._toggle_history_panel)
+        buttons.addWidget(self.history_toggle_button)
+        footer.addLayout(buttons)
+
+        details = QHBoxLayout()
+        self.config_label = QLabel()
+        self.config_label.setObjectName("muted")
+        self.config_label.setToolTip("Détail de la configuration active")
+        details.addWidget(self.config_label, 1)
+        self.status_label = QLabel("Prêt")
+        self.status_label.setObjectName("muted")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        details.addWidget(self.status_label)
+        footer.addLayout(details)
         page.addLayout(footer)
 
     def _restore_display_preferences(self) -> None:
@@ -475,13 +529,20 @@ class MainWindow(QMainWindow):
             saved_sizes = [900, 420]
         self._saved_splitter_sizes = saved_sizes[:2] if len(saved_sizes) >= 2 else [900, 420]
 
-        visible = self.settings.value("display/history_visible", True)
+        has_saved_choice = self.settings.value("display/history_choice_saved", False)
+        if isinstance(has_saved_choice, str):
+            has_saved_choice = has_saved_choice.strip().lower() not in {"0", "false", "no", "off"}
+        visible = self.settings.value("display/history_visible", False) if has_saved_choice else False
         if isinstance(visible, str):
             visible = visible.strip().lower() not in {"0", "false", "no", "off"}
         self.history_frame.setVisible(bool(visible))
         if visible:
             self.main_splitter.setSizes(self._saved_splitter_sizes)
         self._update_history_toggle_button()
+
+    def _save_display_preferences_explicit(self, *_args) -> None:
+        self.settings.setValue("display/history_choice_saved", True)
+        self._save_display_preferences()
 
     def _save_display_preferences(self, *_args) -> None:
         if not hasattr(self, "history_frame"):
@@ -509,6 +570,7 @@ class MainWindow(QMainWindow):
                 self._saved_splitter_sizes = sizes[:2]
             self.history_frame.hide()
         self._update_history_toggle_button()
+        self.settings.setValue("display/history_choice_saved", True)
         self._save_display_preferences()
 
     def _update_history_toggle_button(self) -> None:
